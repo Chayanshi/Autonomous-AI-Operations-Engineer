@@ -91,6 +91,7 @@ _SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_-]?key|secret|password|access[_-]?token|authorization)\b\s*([=:])\s*([^\s,;]+)"
 )
 _BEARER_SECRET = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+_JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 class ModelClient(Protocol):
@@ -278,10 +279,16 @@ def _failure_lines(test_result: dict[str, Any] | None) -> list[str]:
 
 def _model_assessment(content: str | None) -> tuple[dict[str, Any], str]:
     response = _redact_text(content or "").strip()
-    try:
-        parsed = json.loads(response)
-    except json.JSONDecodeError:
-        parsed = None
+    # Live models often wrap the requested object in a ```json fence or surrounding prose.
+    fenced = _JSON_FENCE.search(response)
+    candidates = [response] + ([fenced.group(1)] if fenced else []) + [response[response.find("{") : response.rfind("}") + 1]]
+    parsed = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
 
     if isinstance(parsed, dict):
         hypothesis = parsed.get("likely_root_cause")

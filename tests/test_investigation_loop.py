@@ -279,3 +279,25 @@ def test_patch_tool_is_rejected_without_explicit_authorization() -> None:
     assert all(tool["function"]["name"] != "apply_text_replacement" for tool in model.calls[0][1])
     assert "explicitly authorized" in report["tool_evidence"][0]["error"]["message"]
     assert report["verification_status"] == "not_verified"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '```json\n{"likely_root_cause": "raise in get_users", "recommended_next_action": "patch"}\n```',
+        'Here is my assessment:\n{"likely_root_cause": "raise in get_users", "recommended_next_action": "patch"}',
+    ],
+)
+def test_fenced_or_prefixed_final_json_is_parsed(content: str) -> None:
+    assessment, next_action = investigation_loop._model_assessment(content)
+
+    assert assessment["hypothesis"] == "raise in get_users"
+    assert assessment["verified"] is False
+    assert next_action == "patch"
+
+
+def test_unstructured_final_response_is_kept_raw() -> None:
+    assessment, _ = investigation_loop._model_assessment("I think it is broken.")
+
+    assert assessment["hypothesis"] is None
+    assert assessment["raw_response"] == "I think it is broken."
