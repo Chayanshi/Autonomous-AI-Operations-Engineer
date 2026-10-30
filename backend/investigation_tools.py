@@ -3,13 +3,41 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+TARGETS_DIR = Path(__file__).resolve().parent.parent / "targets"
+DEFAULT_TARGET = "users_api"
+
+
+def target_root(name: str) -> Path:
+    """Resolve a target repository by folder name under targets/ (operator configuration only)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ValueError("Target name must be a plain folder name under targets/")
+    return TARGETS_DIR / name
+
+
+def available_targets() -> list[str]:
+    """Target folders that contain an app.py, sorted by name."""
+    if not TARGETS_DIR.is_dir():
+        return []
+    return sorted(
+        path.name
+        for path in TARGETS_DIR.iterdir()
+        if path.is_dir()
+        and not path.is_symlink()
+        and re.fullmatch(r"[A-Za-z0-9_-]+", path.name)
+        and (path / "app.py").is_file()
+    )
+
+
+# The repository the agent investigates. The agent's own code is never inside it.
+TARGET_NAME = os.environ.get("OPSPILOT_TARGET", DEFAULT_TARGET)
+PROJECT_ROOT = target_root(TARGET_NAME)
 MAX_FILE_SIZE_BYTES = 1_048_576
 TEST_TIMEOUT_SECONDS = 120
 
@@ -127,10 +155,14 @@ def run_tests() -> TestRunResult:
     """Run only this project's fixed pytest command, with a hard timeout."""
     root = _repository_root()
     command = [sys.executable, "-m", "pytest", "-q"]
+    # Plain text output: colour codes would corrupt evidence parsing and the report.
+    environment = {key: value for key, value in os.environ.items() if key not in {"FORCE_COLOR", "PY_COLORS"}}
+    environment["PY_COLORS"] = "0"
     try:
         completed = subprocess.run(
             command,
             cwd=root,
+            env=environment,
             capture_output=True,
             text=True,
             timeout=TEST_TIMEOUT_SECONDS,

@@ -5,3 +5,5 @@ __pycache__/
 .env.*
 !.env.example
 reports/
+node_modules/
+frontend/dist/

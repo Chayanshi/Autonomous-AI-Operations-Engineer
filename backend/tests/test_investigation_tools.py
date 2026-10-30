@@ -106,3 +106,17 @@ def test_run_tests_reports_timeout(repository: Path, monkeypatch: pytest.MonkeyP
 def test_run_tests_does_not_accept_arbitrary_commands() -> None:
     with pytest.raises(TypeError):
         run_tests("python -c 'do anything'")  # type: ignore[call-arg]
+
+
+def test_default_target_is_separate_from_the_agent_code() -> None:
+    agent_dir = Path(investigation_tools.__file__).resolve().parent
+
+    assert investigation_tools.PROJECT_ROOT == investigation_tools.TARGETS_DIR / "users_api"
+    assert agent_dir not in investigation_tools.PROJECT_ROOT.resolve().parents
+    assert (investigation_tools.PROJECT_ROOT / "app.py").is_file()
+
+
+@pytest.mark.parametrize("name", ["../backend", "users_api/../..", "C:\temp", "", "a b"])
+def test_target_names_cannot_escape_the_targets_folder(name: str) -> None:
+    with pytest.raises(ValueError, match="plain folder name"):
+        investigation_tools.target_root(name)

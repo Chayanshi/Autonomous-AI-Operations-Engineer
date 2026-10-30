@@ -63,13 +63,12 @@ def _resolve_patch_path(relative_path: str, allowed_paths: set[str]) -> Path:
     return resolved
 
 
-def apply_text_replacement(
+def _prepare_replacement(
     relative_path: str,
     expected_text: str,
     replacement_text: str,
     allowed_paths: set[str],
-) -> tuple[PatchResult, PatchSnapshot]:
-    """Replace one unique exact source fragment in an explicitly allowed file."""
+) -> tuple[Path, bytes, bytes]:
     if not isinstance(expected_text, str) or not expected_text:
         raise ValueError("expected_text must be a non-empty string")
     if not isinstance(replacement_text, str) or expected_text == replacement_text:
@@ -89,6 +88,32 @@ def apply_text_replacement(
     updated_bytes = original_text.replace(expected_text, replacement_text, 1).encode("utf-8")
     if len(updated_bytes) > MAX_PATCH_FILE_BYTES:
         raise ValueError("Updated file exceeds the size limit")
+    return path, original_bytes, updated_bytes
+
+
+def preview_text_replacement(
+    relative_path: str,
+    expected_text: str,
+    replacement_text: str,
+    allowed_paths: set[str],
+) -> PatchResult:
+    """Validate a replacement exactly as apply would, without writing anything."""
+    _, original_bytes, updated_bytes = _prepare_replacement(relative_path, expected_text, replacement_text, allowed_paths)
+    return PatchResult(
+        relative_path, hashlib.sha256(original_bytes).hexdigest(), hashlib.sha256(updated_bytes).hexdigest()
+    )
+
+
+def apply_text_replacement(
+    relative_path: str,
+    expected_text: str,
+    replacement_text: str,
+    allowed_paths: set[str],
+) -> tuple[PatchResult, PatchSnapshot]:
+    """Replace one unique exact source fragment in an explicitly allowed file."""
+    path, original_bytes, updated_bytes = _prepare_replacement(
+        relative_path, expected_text, replacement_text, allowed_paths
+    )
     original_hash = hashlib.sha256(original_bytes).hexdigest()
     updated_hash = hashlib.sha256(updated_bytes).hexdigest()
 

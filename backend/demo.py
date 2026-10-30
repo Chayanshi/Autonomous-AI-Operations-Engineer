@@ -4,7 +4,9 @@
     python demo.py --scenario bad-patch # mock proposes a wrong fix; shows rollback
     python demo.py --read-only          # diagnose only, no patch tool offered
     python demo.py --live               # Nebius Token Factory (needs NEBIUS_API_KEY)
+    python demo.py --live gemini        # Google Gemini (needs GEMINI_API_KEY)
     python demo.py --reset              # restore app.py to the committed baseline
+    python demo.py --target profile_api # investigate another folder under targets/
 """
 
 from __future__ import annotations
@@ -20,9 +22,10 @@ from typing import Any
 import investigation_tools
 from investigation_loop import investigate_objective
 from mock_model import MOCK_LABEL, SCENARIOS, ScriptedMockModelClient
+from model_client import PROVIDERS, ChatModelClient, ModelConfigurationError
+from target_catalog import describe_target
 
 
-DEFAULT_OBJECTIVE = "Investigate why the /api/users endpoint returns HTTP 500 and fix it."
 PATCH_PATH = "app.py"
 REPORT_PATH = Path("reports") / "last_run.json"
 
@@ -126,7 +129,7 @@ def print_report(report: dict[str, Any], mode_label: str, patch_paths: set[str])
     if report["model_error"]:
         print(f"Model error:   {report['model_error']['type']}: {report['model_error']['message']}")
     if report["stop_reason"] == "model_configuration_error":
-        print("Hint:          set NEBIUS_API_KEY in .env (see .env.example), or run without --live for mock mode.")
+        print("Hint:          set NEBIUS_API_KEY or GEMINI_API_KEY in .env (see .env.example), or run without --live for mock mode.")
 
 
 def _failure_lines_of(run: dict[str, Any]) -> list[str]:
@@ -135,35 +138,45 @@ def _failure_lines_of(run: dict[str, Any]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("objective", nargs="?", default=DEFAULT_OBJECTIVE)
-    parser.add_argument("--live", action="store_true", help="use Nebius Token Factory instead of the mock model")
+    parser.add_argument("objective", nargs="?", help="defaults to the target's described symptom")
+    parser.add_argument("--target", choices=investigation_tools.available_targets(), default=investigation_tools.TARGET_NAME)
+    parser.add_argument(
+        "--live", nargs="?", const="nebius", choices=sorted(PROVIDERS), help="use a real provider (default: nebius)"
+    )
     parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="fix", help="mock model behaviour")
     parser.add_argument("--read-only", action="store_true", help="do not authorize any patch")
     parser.add_argument("--reset", action="store_true", help=f"restore {PATCH_PATH} from git and exit")
     args = parser.parse_args(argv)
     sys.stdout.reconfigure(errors="replace")
+    investigation_tools.PROJECT_ROOT = investigation_tools.target_root(args.target)
+    objective = args.objective or describe_target(args.target)["objective"]
 
     if args.reset:
         result = _git("checkout", "--", PATCH_PATH)
-        print(f"Restored {PATCH_PATH} to the committed baseline." if result.returncode == 0 else result.stderr)
+        print(f"Restored {args.target}/{PATCH_PATH} to the committed baseline." if result.returncode == 0 else result.stderr)
         return result.returncode
 
     if _git("diff", "--quiet", "--", PATCH_PATH).returncode != 0:
-        print(f"WARNING: {PATCH_PATH} differs from the committed baseline. Run `python demo.py --reset` first.")
+        print(f"WARNING: {PATCH_PATH} differs from the committed baseline. Run `python demo.py --reset --target {args.target}` first.")
 
     patch_paths = set() if args.read_only else {PATCH_PATH}
     if args.live:
-        model_client = None  # investigate_objective builds NebiusModelClient from the environment
-        mode_label = "LIVE - Nebius Token Factory (model from NEBIUS_MODEL or default)"
+        try:
+            model_client = ChatModelClient.for_provider(args.live)
+        except ModelConfigurationError as error:
+            print(f"Live mode is not configured: {error}. Add it to backend/.env (see .env.example).")
+            return 1
+        mode_label = f"LIVE - {PROVIDERS[args.live].label} · {model_client.model}"
     else:
         model_client = ScriptedMockModelClient(args.scenario)
-        mode_label = f"{MOCK_LABEL}, scenario={args.scenario}"
+        mode_label = f"{MOCK_LABEL}, scenario={args.scenario}, target={args.target}"
 
     print(f"Running investigation ({'live' if args.live else 'mock'} model); pytest runs may take a moment...")
-    report = investigate_objective(args.objective, model_client, allowed_patch_paths=patch_paths)
+    report = investigate_objective(objective, model_client, allowed_patch_paths=patch_paths)
     print_report(report, mode_label, patch_paths)
 
-    report_file = investigation_tools.PROJECT_ROOT / REPORT_PATH
+    # Saved next to the agent, never inside the target repository the agent can read.
+    report_file = Path(__file__).resolve().parent / REPORT_PATH
     report_file.parent.mkdir(exist_ok=True)
     report_file.write_text(json.dumps({"mode": mode_label, **report}, indent=2, default=str), encoding="utf-8")
     print(f"\nFull evidence report: {REPORT_PATH.as_posix()}")

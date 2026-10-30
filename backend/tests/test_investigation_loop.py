@@ -301,3 +301,47 @@ def test_unstructured_final_response_is_kept_raw() -> None:
 
     assert assessment["hypothesis"] is None
     assert assessment["raw_response"] == "I think it is broken."
+
+
+def test_long_pytest_output_keeps_the_failure_summary_for_the_model() -> None:
+    stdout = "traceback line\n" * 2_000 + "E   AttributeError: boom\nFAILED tests/test_app.py::test_x\n1 failed\n"
+
+    bounded = investigation_loop._model_result({"stdout": stdout, "stderr": "", "exit_code": 1, "timed_out": False})
+
+    assert bounded["exit_code"] == 1
+    assert bounded["stdout"].endswith("FAILED tests/test_app.py::test_x\n1 failed\n")
+    assert "characters omitted" in bounded["stdout"]
+    assert len(json.dumps(bounded)) <= investigation_loop.MAX_MODEL_TOOL_RESULT_CHARS
+
+
+def test_token_usage_is_totalled_and_the_budget_stops_further_model_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    from model_client import TokenUsage
+
+    monkeypatch.setattr(investigation_tools, "list_files", lambda: ["app.py"])
+    model = FakeModelClient(
+        [
+            ModelTurn(content=None, tool_calls=(call("1", "list_files", "{}"),), usage=TokenUsage(900, 50)),
+            ModelTurn(content=None, tool_calls=(call("2", "list_files", "{}"),), usage=TokenUsage(1_000, 60)),
+            ModelTurn(content="never requested", tool_calls=()),
+        ]
+    )
+
+    report = investigation_loop.investigate_objective("Inspect", model, token_budget=1_500)
+
+    assert len(model.calls) == 2, "no model call may start once the budget is spent"
+    assert report["stop_reason"] == "token_budget"
+    assert report["token_usage"] == {"input_tokens": 1_900, "output_tokens": 110, "model_calls": 2, "usage_reported": True}
+    assert report["verification_status"] == "not_verified"
+
+
+def test_runtime_secret_is_redacted_from_evidence_and_model_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    investigation_loop.register_secret("user-supplied-key-123")
+    monkeypatch.setattr(investigation_tools, "read_file", lambda path: "token = user-supplied-key-123")
+    model = FakeModelClient(
+        [ModelTurn(content=None, tool_calls=(call("1", "read_file", '{"relative_path":"app.py"}'),)), ModelTurn(content="{}", tool_calls=())]
+    )
+
+    report = investigation_loop.investigate_objective("Inspect", model)
+
+    assert "user-supplied-key-123" not in json.dumps(report)
+    assert "user-supplied-key-123" not in json.dumps(model.calls[1][0])
